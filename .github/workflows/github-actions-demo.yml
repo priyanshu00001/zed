@@ -13,6 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Enable Long Paths
+        run: |
+          reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
+          echo "Long paths enabled"
+        shell: cmd
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@v1
         with:
