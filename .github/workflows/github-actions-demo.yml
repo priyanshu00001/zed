@@ -11,7 +11,30 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
+      # - uses: actions/checkout@v4
+
+      # - name: Enable Long Paths
+      #   run: |
+      #     reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
+      #     echo "Long paths enabled"
+      #   shell: cmd
+
+      # - name: Set up Rust
+      #   uses: dtolnay/rust-toolchain@v1
+      #   with:
+      #     toolchain: stable
+
+      # - name: Install Node.js
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '18'
+
+      # - name: Build Zed
+      #   run: cargo build --release
+
       - uses: actions/checkout@v4
+        with:
+          path: z
 
       - name: Enable Long Paths
         run: |
@@ -30,4 +53,5 @@ jobs:
           node-version: '18'
 
       - name: Build Zed
+        working-directory: ./z
         run: cargo build --release
