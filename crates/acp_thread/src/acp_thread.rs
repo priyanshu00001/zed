@@ -328,7 +328,7 @@ impl ToolCall {
         location: acp::ToolCallLocation,
         project: WeakEntity<Project>,
         cx: &mut AsyncApp,
-    ) -> Option<AgentLocation> {
+    ) -> Option<ResolvedLocation> {
         let buffer = project
             .update(cx, |project, cx| {
                 project
@@ -350,17 +350,14 @@ impl ToolCall {
             })
             .ok()?;
 
-        Some(AgentLocation {
-            buffer: buffer.downgrade(),
-            position,
-        })
+        Some(ResolvedLocation { buffer, position })
     }
 
     fn resolve_locations(
         &self,
         project: Entity<Project>,
         cx: &mut App,
-    ) -> Task<Vec<Option<AgentLocation>>> {
+    ) -> Task<Vec<Option<ResolvedLocation>>> {
         let locations = self.locations.clone();
         project.update(cx, |_, cx| {
             cx.spawn(async move |project, cx| {
@@ -371,6 +368,23 @@ impl ToolCall {
                 new_locations
             })
         })
+    }
+}
+
+// Separate so we can hold a strong reference to the buffer
+// for saving on the thread
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResolvedLocation {
+    buffer: Entity<Buffer>,
+    position: Anchor,
+}
+
+impl From<&ResolvedLocation> for AgentLocation {
+    fn from(value: &ResolvedLocation) -> Self {
+        Self {
+            buffer: value.buffer.downgrade(),
+            position: value.position,
+        }
     }
 }
 
@@ -1091,13 +1105,13 @@ impl AcpThread {
         cx: &mut Context<Self>,
     ) -> Result<(), acp::Error> {
         match update {
-            acp::SessionUpdate::UserMessageChunk { content } => {
+            acp::SessionUpdate::UserMessageChunk(acp::ContentChunk { content, .. }) => {
                 self.push_user_content_block(None, content, cx);
             }
-            acp::SessionUpdate::AgentMessageChunk { content } => {
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk { content, .. }) => {
                 self.push_assistant_content_block(content, false, cx);
             }
-            acp::SessionUpdate::AgentThoughtChunk { content } => {
+            acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk { content, .. }) => {
                 self.push_assistant_content_block(content, true, cx);
             }
             acp::SessionUpdate::ToolCall(tool_call) => {
@@ -1109,12 +1123,14 @@ impl AcpThread {
             acp::SessionUpdate::Plan(plan) => {
                 self.update_plan(plan, cx);
             }
-            acp::SessionUpdate::AvailableCommandsUpdate { available_commands } => {
-                cx.emit(AcpThreadEvent::AvailableCommandsUpdated(available_commands))
-            }
-            acp::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
-                cx.emit(AcpThreadEvent::ModeUpdated(current_mode_id))
-            }
+            acp::SessionUpdate::AvailableCommandsUpdate(acp::AvailableCommandsUpdate {
+                available_commands,
+                ..
+            }) => cx.emit(AcpThreadEvent::AvailableCommandsUpdated(available_commands)),
+            acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate {
+                current_mode_id,
+                ..
+            }) => cx.emit(AcpThreadEvent::ModeUpdated(current_mode_id)),
         }
         Ok(())
     }
@@ -1393,35 +1409,46 @@ impl AcpThread {
         let task = tool_call.resolve_locations(project, cx);
         cx.spawn(async move |this, cx| {
             let resolved_locations = task.await;
+
             this.update(cx, |this, cx| {
                 let project = this.project.clone();
+
+                for location in resolved_locations.iter().flatten() {
+                    this.shared_buffers
+                        .insert(location.buffer.clone(), location.buffer.read(cx).snapshot());
+                }
                 let Some((ix, tool_call)) = this.tool_call_mut(&id) else {
                     return;
                 };
+
                 if let Some(Some(location)) = resolved_locations.last() {
                     project.update(cx, |project, cx| {
-                        if let Some(agent_location) = project.agent_location() {
-                            let should_ignore = agent_location.buffer == location.buffer
-                                && location
-                                    .buffer
-                                    .update(cx, |buffer, _| {
-                                        let snapshot = buffer.snapshot();
-                                        let old_position =
-                                            agent_location.position.to_point(&snapshot);
-                                        let new_position = location.position.to_point(&snapshot);
-                                        // ignore this so that when we get updates from the edit tool
-                                        // the position doesn't reset to the startof line
-                                        old_position.row == new_position.row
-                                            && old_position.column > new_position.column
-                                    })
-                                    .ok()
-                                    .unwrap_or_default();
-                            if !should_ignore {
-                                project.set_agent_location(Some(location.clone()), cx);
-                            }
+                        let should_ignore = if let Some(agent_location) = project
+                            .agent_location()
+                            .filter(|agent_location| agent_location.buffer == location.buffer)
+                        {
+                            let snapshot = location.buffer.read(cx).snapshot();
+                            let old_position = agent_location.position.to_point(&snapshot);
+                            let new_position = location.position.to_point(&snapshot);
+
+                            // ignore this so that when we get updates from the edit tool
+                            // the position doesn't reset to the startof line
+                            old_position.row == new_position.row
+                                && old_position.column > new_position.column
+                        } else {
+                            false
+                        };
+                        if !should_ignore {
+                            project.set_agent_location(Some(location.into()), cx);
                         }
                     });
                 }
+
+                let resolved_locations = resolved_locations
+                    .iter()
+                    .map(|l| l.as_ref().map(|l| AgentLocation::from(l)))
+                    .collect::<Vec<_>>();
+
                 if tool_call.resolved_locations != resolved_locations {
                     tool_call.resolved_locations = resolved_locations;
                     cx.emit(AcpThreadEvent::EntryUpdated(ix));
@@ -2561,17 +2588,19 @@ mod tests {
                     thread.update(&mut cx, |thread, cx| {
                         thread
                             .handle_session_update(
-                                acp::SessionUpdate::AgentThoughtChunk {
+                                acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk {
                                     content: "Thinking ".into(),
-                                },
+                                    meta: None,
+                                }),
                                 cx,
                             )
                             .unwrap();
                         thread
                             .handle_session_update(
-                                acp::SessionUpdate::AgentThoughtChunk {
+                                acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk {
                                     content: "hard!".into(),
-                                },
+                                    meta: None,
+                                }),
                                 cx,
                             )
                             .unwrap();
@@ -3070,9 +3099,10 @@ mod tests {
                     thread.update(&mut cx, |thread, cx| {
                         thread
                             .handle_session_update(
-                                acp::SessionUpdate::AgentMessageChunk {
+                                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk {
                                     content: content.text.to_uppercase().into(),
-                                },
+                                    meta: None,
+                                }),
                                 cx,
                             )
                             .unwrap();
@@ -3429,9 +3459,10 @@ mod tests {
                     thread.update(&mut cx, |thread, cx| {
                         thread
                             .handle_session_update(
-                                acp::SessionUpdate::AgentMessageChunk {
+                                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk {
                                     content: content.text.to_uppercase().into(),
-                                },
+                                    meta: None,
+                                }),
                                 cx,
                             )
                             .unwrap();

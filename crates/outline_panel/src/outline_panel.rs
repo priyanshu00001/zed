@@ -2484,6 +2484,7 @@ impl OutlinePanel {
                 annotation_range: None,
                 range: search_data.context_range.clone(),
                 text: search_data.context_text.clone(),
+                source_range_for_text: search_data.context_range.clone(),
                 highlight_ranges: search_data
                     .highlights_data
                     .get()
@@ -4836,6 +4837,10 @@ fn file_name(path: &Path) -> String {
 impl Panel for OutlinePanel {
     fn persistent_name() -> &'static str {
         "Outline Panel"
+    }
+
+    fn panel_key() -> &'static str {
+        OUTLINE_PANEL_KEY
     }
 
     fn position(&self, _: &Window, cx: &App) -> DockPosition {

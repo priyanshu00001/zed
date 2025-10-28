@@ -3,12 +3,12 @@ use core::num;
 use gpui::App;
 use language::CursorShape;
 use project::project_settings::DiagnosticSeverity;
-use settings::Settings;
 pub use settings::{
-    CurrentLineHighlight, DisplayIn, DocumentColorsRenderMode, DoubleClickInMultibuffer,
+    CurrentLineHighlight, DelayMs, DisplayIn, DocumentColorsRenderMode, DoubleClickInMultibuffer,
     GoToDefinitionFallback, HideMouseMode, MinimapThumb, MinimapThumbBorder, MultiCursorModifier,
     ScrollBeyondLastLine, ScrollbarDiagnostics, SeedQuerySetting, ShowMinimap, SnippetSortOrder,
 };
+use settings::{RelativeLineNumbers, Settings};
 use ui::scrollbars::{ScrollbarVisibility, ShowScrollbar};
 
 /// Imports from the VSCode settings at
@@ -20,9 +20,9 @@ pub struct EditorSettings {
     pub current_line_highlight: CurrentLineHighlight,
     pub selection_highlight: bool,
     pub rounded_selection: bool,
-    pub lsp_highlight_debounce: u64,
+    pub lsp_highlight_debounce: DelayMs,
     pub hover_popover_enabled: bool,
-    pub hover_popover_delay: u64,
+    pub hover_popover_delay: DelayMs,
     pub toolbar: Toolbar,
     pub scrollbar: Scrollbar,
     pub minimap: Minimap,
@@ -33,7 +33,7 @@ pub struct EditorSettings {
     pub horizontal_scroll_margin: f32,
     pub scroll_sensitivity: f32,
     pub fast_scroll_sensitivity: f32,
-    pub relative_line_numbers: bool,
+    pub relative_line_numbers: RelativeLineNumbers,
     pub seed_search_query_from_cursor: SeedQuerySetting,
     pub use_smartcase_search: bool,
     pub multi_cursor_modifier: MultiCursorModifier,
@@ -147,7 +147,7 @@ pub struct DragAndDropSelection {
     /// The delay in milliseconds that must elapse before drag and drop is allowed. Otherwise, a new text selection is created.
     ///
     /// Default: 300
-    pub delay: u64,
+    pub delay: DelayMs,
 }
 
 /// Default options for buffer and project search items.
